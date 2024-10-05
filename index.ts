@@ -582,16 +582,57 @@ export const utf8: BytesCoder = {
   decode: (str) => new TextEncoder().encode(str),
 };
 
-export const hex: BytesCoder = /* @__PURE__ */ chain(
-  radix2(4),
-  alphabet('0123456789abcdef'),
-  join(''),
-  normalize((s: string) => {
-    if (typeof s !== 'string' || s.length % 2)
-      throw new TypeError(`hex.decode: expected string, got ${typeof s} with length ${s.length}`);
-    return s.toLowerCase();
-  })
-);
+/**
+ * Converts bytes to hex and back. Optimized version.
+ */
+export const hex: BytesCoder = /* @__PURE__ */ (() => {
+  // We are using optimized version: it's 23x faster on 8KB inputs. Simplified version can be:
+  // chain(radix2(4), alphabet('0123456789abcdef'), join(''), normalize((s: string) => {
+  //   if (typeof s === 'string' && s.length % 2 === 0) return s.toLowerCase();
+  //   throw new TypeError(`expected padded hex`);
+  // }))
+
+  // Array where index 0xf0 (240) is mapped to string 'f0'
+  const hexes = /* @__PURE__ */ Array.from({ length: 256 }, (_, i) =>
+    i.toString(16).padStart(2, '0')
+  );
+  function bytesToHex(bytes: Uint8Array): string {
+    if (!isBytes(bytes)) throw new Error('Uint8Array expected');
+    // pre-caching improves the speed 6x
+    let hex = '';
+    for (let i = 0; i < bytes.length; i++) {
+      hex += hexes[bytes[i]!];
+    }
+    return hex;
+  }
+
+  const asciis = { _0: 48, _9: 57, _A: 65, _F: 70, _a: 97, _f: 102 } as const;
+  function asciiToBase16(char: number): number | undefined {
+    if (char >= asciis._0 && char <= asciis._9) return char - asciis._0;
+    if (char >= asciis._A && char <= asciis._F) return char - (asciis._A - 10);
+    if (char >= asciis._a && char <= asciis._f) return char - (asciis._a - 10);
+    return;
+  }
+  function hexToBytes(hex: string): Uint8Array {
+    if (typeof hex !== 'string') throw new Error('hex string expected, got ' + typeof hex);
+    const hl = hex.length;
+    const al = hl / 2;
+    if (hl % 2) throw new Error('padded hex string expected, got unpadded hex of length ' + hl);
+    const array = new Uint8Array(al);
+    for (let ai = 0, hi = 0; ai < al; ai++, hi += 2) {
+      const n1 = asciiToBase16(hex.charCodeAt(hi));
+      const n2 = asciiToBase16(hex.charCodeAt(hi + 1));
+      if (n1 === undefined || n2 === undefined) {
+        const char = hex[hi] + hex[hi + 1]!;
+        throw new Error('hex string expected, got non-hex character "' + char + '" at index ' + hi);
+      }
+      array[ai] = n1 * 16 + n2;
+    }
+    return array;
+  }
+
+  return { encode: bytesToHex, decode: hexToBytes };
+})();
 
 // prettier-ignore
 const CODERS = {
